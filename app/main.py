@@ -1,4 +1,5 @@
 from typing import Optional, Union, List
+from wsgiref.validate import validator
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
@@ -6,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 from pymongo import MongoClient
+from pydantic import BaseModel, Field, validator
 import os
 import uuid
 from bson import ObjectId
@@ -56,7 +58,7 @@ class EventCreate(BaseModel):
     type: str
 
 class GetEvent(BaseModel):
-    id: Optional[str] = Field(None, alias="_id")
+    id: Optional[Union[int, str]] = Field(None, alias="_id")
     name: str
     description: str
     latitude: Optional[float] = None
@@ -65,6 +67,14 @@ class GetEvent(BaseModel):
     age_range_max: Optional[int] = None
     type: str
     picture: Optional[str]
+
+    @validator('id', pre=True, always=True)
+    def stringify_id(cls, v):
+        return str(v) if v is not None else None
+
+    class Config:
+        orm_mode = True
+        allow_population_by_field_name = True
 
 class UserSignUp(BaseModel):
     username: str
@@ -230,10 +240,10 @@ async def get_event(event_id: str):
     event = events_collection.find_one({"_id": event_id_int})
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
-
-    event_data = jsonable_encoder(event)
-
-    return event_data
+    
+    event['id'] = event['_id']
+    del event['_id'] 
+    return event
 
 @app.get("/events/picture/{filename}", tags=["events"])
 async def get_event_picture(filename: str):
