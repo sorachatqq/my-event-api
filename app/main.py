@@ -23,6 +23,8 @@ client = MongoClient(MONGODB_URL)
 db = client['my_event_db']
 
 users_collection = db.users
+events_collection = db.events
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # OAuth2 password bearer token
@@ -52,6 +54,17 @@ class EventCreate(BaseModel):
     age_range_min: Optional[int] = None
     age_range_max: Optional[int] = None
     type: str
+
+class GetEvent(BaseModel):
+    id: Optional[str] = Field(None, alias="_id")
+    name: str
+    description: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    age_range_min: Optional[int] = None
+    age_range_max: Optional[int] = None
+    type: str
+    picture: Optional[str]
 
 class UserSignUp(BaseModel):
     username: str
@@ -201,21 +214,25 @@ async def create_event(
         "picture": file_path
     }
 
-    events_collection = db.events
     event_data_json = jsonable_encoder(event_data)
     events_collection.insert_one(event_data_json)
 
     # Return the created event
     return {"detail": "Event created successfully", "event": event_data}
 
-@app.get("/events/{event_id}", response_model=EventCreate, tags=["events"])
+@app.get("/events/{event_id}", response_model=GetEvent, tags=["events"])
 async def get_event(event_id: str):
-    events_collection = db.events
-    event = events_collection.find_one({"_id": event_id})
+    try:
+        event_id_int = int(event_id)  # Convert if ID is numeric
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Event ID must be an integer")
+
+    event = events_collection.find_one({"_id": event_id_int})
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
-    
+
     event_data = jsonable_encoder(event)
+
     return event_data
 
 @app.get("/events/picture/{filename}", tags=["events"])
@@ -225,6 +242,25 @@ async def get_event_picture(filename: str):
         raise HTTPException(status_code=404, detail="File not found")
     
     return FileResponse(file_path)
+
+@app.get("/events/{event_id}/picture", tags=["events"])
+async def get_event_picture(event_id: str):
+    try:
+        event_id_int = int(event_id)  # if event_id is expected to be an integer
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Event ID must be an integer")
+
+    event = events_collection.find_one({"_id": event_id_int})
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    file_path = event.get("picture")
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Serve the picture file
+    return FileResponse(file_path)
+
 
 if __name__ == "__main__":
     import uvicorn
