@@ -104,16 +104,15 @@ def create_user(user: UserSignUp):
         )
     if users_collection.find_one({"username": user.username}):
         raise HTTPException(status_code=400, detail="Username already registered")
-    
-    result = users_collection.insert_one(user_data)
-    user_id = str(result.inserted_id)
-    user_data['id'] = user_id
+
     hashed_password = pwd_context.hash(user.password)
     user_data = user.dict(exclude={"password", "repeat_password"})  # Exclude plaintext passwords
     user_data["hashed_password"] = hashed_password
 
-    users_collection.insert_one(user_data)
-    return {**user_data, "password": "", "_id": ""}  # Exclude hashed password in the response
+    result = users_collection.insert_one(user_data)
+    user_id = str(result.inserted_id)
+    user_data['id'] = user_id
+    return {**user_data, "hashed_password": ""}  # Exclude hashed_password in the response
 
 def get_user(username: str):
     user_dict = users_collection.find_one({"username": username})
