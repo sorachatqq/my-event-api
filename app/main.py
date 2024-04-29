@@ -1,5 +1,6 @@
 from random import randint
 import random
+import string
 from typing import Optional, Union, List, Any
 from wsgiref.validate import validator
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form, Query, Body, Security
@@ -120,6 +121,8 @@ class GetEvent(BaseModel):
     approved: bool = False
     is_open_for_registration: bool = True
     is_active: bool = True
+    is_registered: bool  # Add this field to indicate if the user is registered for the event
+    registration_code: Optional[str] = None  # Make the registration_code field optional
 
     @validator('id', pre=True, always=True)
     def stringify_id(cls, v):
@@ -390,19 +393,21 @@ async def create_event(
     return {"detail": "Event created successfully", "event": event_data}
 
 @app.get("/events/{event_id}", response_model=GetEvent, tags=["events"])
-async def get_event(event_id: str):
-    try:
-        event_id_int = int(event_id)  # Convert if ID is numeric
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Event ID must be an integer")
+async def get_event(event_id: str, current_user: User = Depends(get_current_user)):
 
-    event = events_collection.find_one({"_id": event_id_int})
+    event = events_collection.find_one({"_id": event_id})
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
-    
-    event['id'] = event['_id']
-    del event['_id'] 
-    return event
+
+    # Check if the user is registered for the event
+    registration = registrations_collection.find_one({"user_id": current_user.id, "event_id": event_id})
+    if registration:
+        event["is_registered"] = True
+        event["registration_code"] = str(registration.get("registration_code"))
+    else:
+        event["is_registered"] = False
+
+    return GetEvent(**event)
 
 @app.get("/events/picture/{filename}", tags=["events"])
 async def get_event_picture(filename: str):
@@ -431,9 +436,21 @@ async def get_event_picture(event_id: str):
     return FileResponse(file_path)
 
 @app.get("/events", response_model=List[GetEvent], tags=["events"])
-async def get_all_events():
+async def get_all_events(current_user: User = Depends(get_current_user)):
+    print(current_user.id)
     events_cursor = events_collection.find({})
     events_list = list(events_cursor)
+    
+    for event in events_list:
+        registration = registrations_collection.find_one({"user_id": current_user.id, "event_id": event["_id"]})
+        if registration:
+            event["is_registered"] = True
+            event["registration_code"] = str(registration.get("registration_code"))
+        else:
+            event["is_registered"] = False
+            event["registration_code"] = None  # Or any default value you want to assign
+
+    
     return [GetEvent(**event) for event in events_list]
 
 @app.post("/events/register/{event_id}", response_model=EventRegistration, tags=["user"])
@@ -454,7 +471,7 @@ async def register_for_event(event_id: str, current_user: User = Depends(get_cur
         return EventRegistration(**existing_registration)
 
     # Generate a new registration code
-    registration_code = ''.join([str(randint(0, 9)) for _ in range(6)])
+    registration_code = ''.join([random.choice(string.ascii_lowercase + string.digits) for _ in range(6)])
 
     # Create registration entry
     registration = {
@@ -473,8 +490,7 @@ async def register_for_event(event_id: str, current_user: User = Depends(get_cur
     return EventRegistration(**registration)
 
 @app.post("/home/nearby", response_model=List[GetEvent], tags=["home"])
-async def get_nearby_events(search_params: NearbySearch = Body(...)):
-    # Convert radius from kilometers to meters
+async def get_nearby_events(search_params: NearbySearch = Body(...), current_user: User = Depends(get_current_user)):
     radius_in_meters = search_params.radius * 1000
     query = {
         "location": {
@@ -489,7 +505,17 @@ async def get_nearby_events(search_params: NearbySearch = Body(...)):
     }
     try:
         events = list(events_collection.find(query))
-        return [GetEvent(**event) for event in events]
+        nearby_events = []
+        for event in events:
+            registration = registrations_collection.find_one({"user_id": current_user.id, "event_id": event["_id"]})
+            if registration:
+                event["is_registered"] = True
+                event["registration_code"] = str(registration.get("registration_code"))
+            else:
+                event["is_registered"] = False
+                event["registration_code"] = None  # Or any default value you want to assign
+            nearby_events.append(GetEvent(**event))
+        return nearby_events
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
