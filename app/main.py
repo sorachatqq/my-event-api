@@ -74,8 +74,8 @@ class AgeRange(BaseModel):
 class EventCreate(BaseModel):
     name: str
     description: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+    latitude: float
+    longitude: float
     age_range_min: Optional[int] = None
     age_range_max: Optional[int] = None
     type: str
@@ -136,7 +136,7 @@ class User(BaseModel):
 
     @validator('id', pre=True, always=True)
     def stringify_id(cls, v):
-        return str(v) if isinstance(v, (ObjectId, int)) else v
+        return str(v) if isinstance(v, ObjectId) else v
 
     class Config:
         orm_mode = True
@@ -149,6 +149,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: User
+    userId: str
 
 class UserInDB(BaseModel):
     id: Any = Field(None, alias="_id")
@@ -206,13 +207,18 @@ def create_user(user: UserSignUp):
     user_data = user.dict(exclude={"password", "repeat_password"})
     user_data["hashed_password"] = hashed_password
 
+    # Insert the new user into the database
     result = users_collection.insert_one(user_data)
-    user_data['id'] = str(result.inserted_id)
-    user_data['disabled'] = False
+    if not result.acknowledged:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User registration failed")
 
-    # Make sure to exclude sensitive fields in the response
-    del user_data["hashed_password"]
-    return user_data
+    # Retrieve the new user from the database to ensure all data, including the `_id`, is correct
+    new_user_data = users_collection.find_one({"_id": result.inserted_id})
+    if not new_user_data:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="User registration failed")
+
+    # Convert to User model, which will handle the ID serialization
+    return User(**new_user_data)
 
 def get_user(username: str):
     user_record = users_collection.find_one({"username": username})
@@ -227,9 +233,19 @@ def verify_password(plain_password, hashed_password):
 
 def authenticate_user(username: str, password: str):
     user_dict = users_collection.find_one({"username": username})
-    if user_dict and 'hashed_password' in user_dict and verify_password(password, user_dict["hashed_password"]):
-        user_dict['_id'] = str(user_dict['_id'])  # Convert ObjectId to string
-        return User(**user_dict)
+    if user_dict:
+        print("User found in DB:", user_dict)
+    else:
+        print("No user found with that username.") 
+
+    if user_dict and 'hashed_password' in user_dict:
+        if verify_password(password, user_dict["hashed_password"]):
+            # user_dict['id'] = str(user_dict['_id'])
+            user_obj = User(**user_dict)  # Convert dictionary to User Pydantic model
+            print("User object after conversion:", user_obj.dict())  # Debug: Final user object
+            return user_obj
+        else:
+            print("Password verification failed.")  # Debug: Incorrect password
     return None
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
@@ -265,9 +281,13 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
-    user_data = user.dict(exclude={"hashed_password", "_id"})
-
-    return {"access_token": access_token, "token_type": "bearer", "user": user_data}
+    # Ensure to include 'id' from the User model in the response
+    user_data = user.dict()
+    user_data.pop('hashed_password', None)  # Exclude hashed_password for security
+    
+    print("Final user data to be sent:", user_data)  # Debug: Final response data
+    
+    return {"access_token": access_token, "token_type": "bearer", "user": user_data, "userId": user_data['id']}
 
 @app.patch("/users/update/{user_id}", response_model=User, tags=["user management"])
 async def update_user_profile(
@@ -308,7 +328,8 @@ async def create_event(
     age_range_min: Optional[int] = Form(None, ge=0, le=150),
     age_range_max: Optional[int] = Form(None, ge=0, le=150),
     type: str = Form(...),
-    picture: Optional[UploadFile] = File(None)
+    picture: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user)  # Extract the current authenticated user
 ):
     os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
     # Handle file upload
@@ -322,18 +343,9 @@ async def create_event(
         except IOError as e:
             raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
     
-    counter = db.counters.find_one_and_update(
-        {"_id": "event_id"},
-        {"$inc": {"count": 1}},
-        new=True,
-        upsert=True
-    )
-    event_id = counter['count']
-
-
-    # Prepare event data
+    # Prepare event data with created_by field
     event_data = {
-        "_id": event_id,
+        "_id": uuid.uuid4().hex,
         "name": name,
         "description": description,
         "location": {
@@ -345,9 +357,9 @@ async def create_event(
             "max": age_range_max
         },
         "type": type,
-        "picture": file_path if picture else None
+        "picture": file_path if picture else None,
+        "created_by": current_user.id
     }
-
 
     event_data_json = jsonable_encoder(event_data)
     events_collection.insert_one(event_data_json)
