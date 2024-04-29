@@ -307,28 +307,28 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 @app.patch("/users/update/{user_id}", response_model=User, tags=["user management"])
 async def update_user_profile(
-    user_id: str, 
-    user_update: UserUpdate, 
-    current_user: User = Depends(get_current_user)
+    user_id: str,
+    user_update: UserUpdate,
 ):
-    # Authorization: Ensure only admins can change roles or you can add more complex logic
-    # if user_update.role and current_user.role != "admin":
-    #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to change roles")
+    # Convert string ID to ObjectId
+    try:
+        object_id = ObjectId(user_id)
+    except:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID format")
 
-    # Retrieve the existing user
-    existing_user = users_collection.find_one({"_id": user_id})
+    existing_user = users_collection.find_one({"_id": object_id})
     if not existing_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Update fields if provided
     update_data = user_update.dict(exclude_unset=True)
     if update_data:
-        users_collection.update_one({"_id": user_id}, {"$set": update_data})
+        result = users_collection.update_one({"_id": object_id}, {"$set": update_data})
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="User not found or not updated")
 
-    # Fetch the updated user to return
-    updated_user = users_collection.find_one({"_id": user_id})
+    updated_user = users_collection.find_one({"_id": object_id})
     if updated_user:
-        updated_user['id'] = updated_user['_id']
+        updated_user['id'] = str(updated_user['_id'])
         del updated_user['_id']
         return User(**updated_user)
     else:
