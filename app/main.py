@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from pymongo import MongoClient, GEOSPHERE
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, EmailStr
 import os
 import uuid
 from bson import ObjectId
@@ -118,12 +118,16 @@ class UserSignUp(BaseModel):
 
 
 class User(BaseModel):
-    id: Optional[str] = Field(None, alias="_id")
+    id: Any = Field(None, alias="_id")
     username: str
     full_name: Optional[str] = None
     email: str
-    disabled: bool = False  # Set a default value
+    disabled: bool = False
     role: str = "user"
+
+    @validator('id', pre=True, always=True)
+    def stringify_id(cls, v):
+        return str(v) if isinstance(v, (ObjectId, int)) else v
 
     class Config:
         orm_mode = True
@@ -138,6 +142,7 @@ class Token(BaseModel):
     user: User
 
 class UserInDB(BaseModel):
+    id: Any = Field(None, alias="_id")
     username: str
     full_name: str = None
     email: str
@@ -155,6 +160,14 @@ class UserInDB(BaseModel):
                 "disabled": False
             }
         }
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    role: Optional[str] = None 
+    disabled: Optional[bool] = None
+
 
 class NearbySearch(BaseModel):
     latitude: float = Field(..., ge=-90.0, le=90.0, description="Latitude of the location")
@@ -174,27 +187,23 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 @app.post("/signup", response_model=User, tags=["authentication"])
 def create_user(user: UserSignUp):
     if user.password != user.repeat_password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Passwords do not match",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Passwords do not match")
     if users_collection.find_one({"username": user.username}):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already registered")
     if users_collection.find_one({"email": user.email}):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-
-    # Here you could add additional password strength validation
 
     hashed_password = pwd_context.hash(user.password)
     user_data = user.dict(exclude={"password", "repeat_password"})
     user_data["hashed_password"] = hashed_password
 
     result = users_collection.insert_one(user_data)
-    user_id = str(result.inserted_id)
-    user_data['id'] = user_id
+    user_data['id'] = str(result.inserted_id)
     user_data['disabled'] = False
 
-    return {**user_data, "hashed_password": ""}
+    # Make sure to exclude sensitive fields in the response
+    del user_data["hashed_password"]
+    return user_data
 
 def get_user(username: str):
     user_record = users_collection.find_one({"username": username})
@@ -209,15 +218,10 @@ def verify_password(plain_password, hashed_password):
 
 def authenticate_user(username: str, password: str):
     user_dict = users_collection.find_one({"username": username})
-    if user_dict:
-        if 'disabled' not in user_dict:
-            user_dict['disabled'] = False  # Default to False if not specified
-
-        if verify_password(password, user_dict["hashed_password"]):
-            user_dict['_id'] = str(user_dict['_id'])  # Convert ObjectId to string for consistency
-            return User(**user_dict)
+    if user_dict and 'hashed_password' in user_dict and verify_password(password, user_dict["hashed_password"]):
+        user_dict['_id'] = str(user_dict['_id'])  # Convert ObjectId to string
+        return User(**user_dict)
     return None
-
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     credentials_exception = HTTPException(
@@ -255,6 +259,36 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     user_data = user.dict(exclude={"hashed_password", "_id"})
 
     return {"access_token": access_token, "token_type": "bearer", "user": user_data}
+
+@app.patch("/users/update/{user_id}", response_model=User, tags=["user management"])
+async def update_user_profile(
+    user_id: str, 
+    user_update: UserUpdate, 
+    current_user: User = Depends(get_current_user)
+):
+    # Authorization: Ensure only admins can change roles or you can add more complex logic
+    # if user_update.role and current_user.role != "admin":
+    #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to change roles")
+
+    # Retrieve the existing user
+    existing_user = users_collection.find_one({"_id": user_id})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update fields if provided
+    update_data = user_update.dict(exclude_unset=True)
+    if update_data:
+        users_collection.update_one({"_id": user_id}, {"$set": update_data})
+
+    # Fetch the updated user to return
+    updated_user = users_collection.find_one({"_id": user_id})
+    if updated_user:
+        updated_user['id'] = updated_user['_id']
+        del updated_user['_id']
+        return User(**updated_user)
+    else:
+        raise HTTPException(status_code=404, detail="User not found after update")
+
 
 @app.post("/events/create", tags=["events"])
 async def create_event(
@@ -400,6 +434,40 @@ async def get_nearby_events(search_params: NearbySearch = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.patch("/events/update/{event_id}", response_model=GetEvent, tags=["admin", "events"])
+async def update_event(
+    event_id: str, 
+    is_open_for_registration: Optional[bool] = Query(None, description="Open or close event for registration"),
+    approved: Optional[bool] = Query(None, description="Approve or disapprove the event"),
+    current_user: User = Depends(get_current_user)
+):
+    # Check if the current user is an admin
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to perform this action")
+
+    # Retrieve the existing event
+    existing_event = events_collection.find_one({"_id": event_id})
+    if not existing_event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Update fields
+    update_data = {}
+    if is_open_for_registration is not None:
+        update_data['is_open_for_registration'] = is_open_for_registration
+    if approved is not None:
+        update_data['approved'] = approved
+
+    if update_data:
+        events_collection.update_one({"_id": event_id}, {"$set": update_data})
+
+    # Fetch the updated event to return
+    updated_event = events_collection.find_one({"_id": event_id})
+    if updated_event:
+        updated_event['id'] = updated_event['_id']
+        del updated_event['_id']
+        return updated_event
+    else:
+        raise HTTPException(status_code=404, detail="Event not found after update")
 
 if __name__ == "__main__":
     import uvicorn
