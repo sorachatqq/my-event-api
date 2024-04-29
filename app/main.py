@@ -144,6 +144,7 @@ class UserSignUp(BaseModel):
     gender: Optional[str] = None
     age: Optional[int] = None
     interest_thing: Optional[str] = None
+    role: Optional[str] = None
 
 
 class User(BaseModel):
@@ -351,6 +352,9 @@ async def create_event(
     picture: Optional[UploadFile] = File(None),
     current_user: User = Depends(get_current_user)  # Extract the current authenticated user
 ):
+    # Create 2dsphere index on the 'location' field of the events collection
+    events_collection.create_index([("location", "2dsphere")])
+    
     os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
     # Handle file upload
     if picture:
