@@ -376,7 +376,8 @@ async def create_event(
         "picture": file_path if picture else None,
         "created_by": current_user.id,
         "approved": False,
-        "is_open_for_registration": False
+        "is_open_for_registration": False,
+        "is_active": True
     }
 
     event_data_json = jsonable_encoder(event_data)
