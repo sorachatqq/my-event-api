@@ -433,25 +433,41 @@ async def get_all_events():
     events_list = list(events_cursor)
     return [GetEvent(**event) for event in events_list]
 
-@app.post("/events/register/{event_id}", response_model=EventRegistration, tags=["events"])
+@app.post("/events/register/{event_id}", response_model=EventRegistration, tags=["user"])
 async def register_for_event(event_id: str, current_user: User = Depends(get_current_user)):
-    event = events_collection.find_one({"_id": event_id})
-    if not event or not event.get('is_open_for_registration', False):
+    # No need to convert string ID to ObjectId here
+
+    # Check if the event is open for registration
+    event = events_collection.find_one({"_id": event_id})  # Use the string ID directly
+    if not event:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    if not event.get('is_open_for_registration', False):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This event is not open for registration.")
 
+    # Check if the user is already registered for the event
     existing_registration = registrations_collection.find_one({"user_id": current_user.id, "event_id": event_id})
     if existing_registration:
-        return existing_registration  # User already registered, return existing code
+        # If already registered, return the existing registration
+        return EventRegistration(**existing_registration)
 
-    # Register the user and generate a code
+    # Generate a new registration code
     registration_code = ''.join([str(randint(0, 9)) for _ in range(6)])
+
+    # Create registration entry
     registration = {
         "user_id": current_user.id,
         "event_id": event_id,
         "registration_code": registration_code
     }
-    registrations_collection.insert_one(registration)
-    return registration
+
+    # Insert the new registration into the collection
+    result = registrations_collection.insert_one(registration)
+    if not result.acknowledged:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Registration failed.")
+
+    # Return the new registration details
+    registration['_id'] = result.inserted_id
+    return EventRegistration(**registration)
 
 @app.post("/home/nearby", response_model=List[GetEvent], tags=["home"])
 async def get_nearby_events(search_params: NearbySearch = Body(...)):
@@ -527,7 +543,7 @@ async def approve_event(
 @app.patch("/events/update-registration/{event_id}", response_model=GetEvent, tags=["events"])
 async def update_event(
     event_id: str, 
-    is_open_for_registration: Optional[bool] = Query(None, description="Open or close event for registration"),
+    is_open_for_registration: bool = Query(None, description="Open or close event for registration"),
 ):
     # Retrieve the existing event
     existing_event = events_collection.find_one({"_id": event_id})
