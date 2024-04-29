@@ -349,7 +349,7 @@ async def create_event(
     age_range_min: Optional[int] = Form(None, ge=0, le=150),
     age_range_max: Optional[int] = Form(None, ge=0, le=150),
     type: str = Form(...),
-    picture: Optional[UploadFile] = File(None),
+    picture: UploadFile = File(None),
     current_user: User = Depends(get_current_user)  # Extract the current authenticated user
 ):
     # Create 2dsphere index on the 'location' field of the events collection
