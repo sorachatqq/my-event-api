@@ -523,17 +523,11 @@ async def approve_event(
     else:
         raise HTTPException(status_code=404, detail="Event not found after update")
 
-@app.patch("/events/update/{event_id}", response_model=GetEvent, tags=["admin", "events"])
+@app.patch("/events/update-registration/{event_id}", response_model=GetEvent, tags=["events"])
 async def update_event(
     event_id: str, 
     is_open_for_registration: Optional[bool] = Query(None, description="Open or close event for registration"),
-    approved: Optional[bool] = Query(None, description="Approve or disapprove the event"),
-    current_user: User = Depends(get_current_user)
 ):
-    # Check if the current user is an admin
-    if current_user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to perform this action")
-
     # Retrieve the existing event
     existing_event = events_collection.find_one({"_id": event_id})
     if not existing_event:
@@ -543,8 +537,6 @@ async def update_event(
     update_data = {}
     if is_open_for_registration is not None:
         update_data['is_open_for_registration'] = is_open_for_registration
-    if approved is not None:
-        update_data['approved'] = approved
 
     if update_data:
         events_collection.update_one({"_id": event_id}, {"$set": update_data})
