@@ -1,12 +1,11 @@
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Any
 from wsgiref.validate import validator
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form, Query, Body
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, Field
 from passlib.context import CryptContext
-from pymongo import MongoClient
+from pymongo import MongoClient, GEOSPHERE
 from pydantic import BaseModel, Field, validator
 import os
 import uuid
@@ -43,6 +42,9 @@ users_db = {
     }
 }
 
+# Check current indexes on the events collection
+indexes = events_collection.index_information()
+print(indexes)
 
 class AgeRange(BaseModel):
     min: Optional[int] = Field(None, ge=0, le=150)
@@ -57,24 +59,33 @@ class EventCreate(BaseModel):
     age_range_max: Optional[int] = None
     type: str
 
+class Location(BaseModel):
+    type: str
+    coordinates: List[float]
+
+class AgeRange(BaseModel):
+    min: Optional[int]
+    max: Optional[int]
+
 class GetEvent(BaseModel):
-    id: Optional[Union[int, str]] = Field(None, alias="_id")
+    id: Any = Field(None, alias="_id")
     name: str
     description: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    age_range_min: Optional[int] = None
-    age_range_max: Optional[int] = None
+    location: Location
+    age_range: AgeRange
     type: str
     picture: Optional[str]
 
     @validator('id', pre=True, always=True)
     def stringify_id(cls, v):
-        return str(v) if v is not None else None
+        return str(v) if isinstance(v, (ObjectId, int)) else v
 
     class Config:
         orm_mode = True
         allow_population_by_field_name = True
+        json_encoders = {
+            ObjectId: lambda v: str(v),
+        }
 
 class UserSignUp(BaseModel):
     username: str
@@ -117,6 +128,11 @@ class UserInDB(BaseModel):
                 "disabled": False
             }
         }
+
+class NearbySearch(BaseModel):
+    latitude: float = Field(..., ge=-90.0, le=90.0, description="Latitude of the location")
+    longitude: float = Field(..., ge=-180.0, le=180.0, description="Longitude of the location")
+    radius: float = Field(..., description="Radius in kilometers to search for nearby events")
 
 @app.post("/signup", response_model=User, tags=["authentication"])
 def create_user(user: UserSignUp):
@@ -214,15 +230,18 @@ async def create_event(
         "_id": event_id,
         "name": name,
         "description": description,
-        "latitude": latitude,
-        "longitude": longitude,
+        "location": {
+            "type": "Point",
+            "coordinates": [longitude, latitude]
+        },
         "age_range": {
             "min": age_range_min,
             "max": age_range_max
         },
         "type": type,
-        "picture": file_path
+        "picture": file_path if picture else None
     }
+
 
     event_data_json = jsonable_encoder(event_data)
     events_collection.insert_one(event_data_json)
@@ -270,6 +289,33 @@ async def get_event_picture(event_id: str):
 
     # Serve the picture file
     return FileResponse(file_path)
+
+@app.get("/events", response_model=List[GetEvent], tags=["events"])
+async def get_all_events():
+    events_cursor = events_collection.find({})
+    events_list = list(events_cursor)
+    return [GetEvent(**event) for event in events_list]
+
+@app.post("/home/nearby", response_model=List[GetEvent], tags=["home"])
+async def get_nearby_events(search_params: NearbySearch = Body(...)):
+    # Convert radius from kilometers to meters
+    radius_in_meters = search_params.radius * 1000
+    query = {
+        "location": {
+            "$near": {
+                "$geometry": {
+                    "type": "Point",
+                    "coordinates": [search_params.longitude, search_params.latitude]
+                },
+                "$maxDistance": radius_in_meters
+            }
+        }
+    }
+    try:
+        events = list(events_collection.find(query))
+        return [GetEvent(**event) for event in events]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
