@@ -82,14 +82,27 @@ class EventCreate(BaseModel):
     approved: bool = False
     is_open_for_registration: bool = True
 
+class Location(BaseModel):
+    type: str
+    coordinates: List[float]
+
+class Event(BaseModel):
+    id: Any = Field(None, alias="_id")
+    name: str
+    description: str
+    location: Location
+    age_range: AgeRange
+    type: str
+    picture: Optional[str]
+    approved: bool = False
+    is_open_for_registration: bool = True
+    is_active: bool = True  # Field to indicate if the event is currently active
+
 class EventRegistration(BaseModel):
     user_id: str
     event_id: str
     registration_code: Optional[str] = None
 
-class Location(BaseModel):
-    type: str
-    coordinates: List[float]
 
 class AgeRange(BaseModel):
     min: Optional[int]
@@ -103,6 +116,9 @@ class GetEvent(BaseModel):
     age_range: AgeRange
     type: str
     picture: Optional[str]
+    approved: bool = False
+    is_open_for_registration: bool = True
+    is_active: bool = True
 
     @validator('id', pre=True, always=True)
     def stringify_id(cls, v):
@@ -323,8 +339,8 @@ async def update_user_profile(
 async def create_event(
     name: str = Form(...),
     description: str = Form(...),
-    latitude: Optional[float] = Form(None, ge=-90.0, le=90.0),
-    longitude: Optional[float] = Form(None, ge=-180.0, le=180.0),
+    latitude: float = Form(ge=-90.0, le=90.0),
+    longitude: float = Form(ge=-180.0, le=180.0),
     age_range_min: Optional[int] = Form(None, ge=0, le=150),
     age_range_max: Optional[int] = Form(None, ge=0, le=150),
     type: str = Form(...),
@@ -358,7 +374,9 @@ async def create_event(
         },
         "type": type,
         "picture": file_path if picture else None,
-        "created_by": current_user.id
+        "created_by": current_user.id,
+        "approved": False,
+        "is_open_for_registration": False
     }
 
     event_data_json = jsonable_encoder(event_data)
@@ -454,6 +472,56 @@ async def get_nearby_events(search_params: NearbySearch = Body(...)):
         return [GetEvent(**event) for event in events]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/events/end/{event_id}", response_model=GetEvent, tags=["events"])
+async def end_event(
+    event_id: str
+):
+
+    # Retrieve the existing event
+    existing_event = events_collection.find_one({"_id": event_id})
+    if not existing_event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Mark the event as inactive
+    events_collection.update_one({"_id": event_id}, {"$set": {"is_active": False}})
+
+    # Fetch the updated event to return
+    updated_event = events_collection.find_one({"_id": event_id})
+    if updated_event:
+        updated_event['id'] = updated_event['_id']
+        del updated_event['_id']
+        return updated_event
+    else:
+        raise HTTPException(status_code=404, detail="Event not found after update")
+
+    
+@app.patch("/events/approve/{event_id}", response_model=GetEvent, tags=["admin"])
+async def approve_event(
+    event_id: str, 
+    approved: bool = Query(..., description="Approve or disapprove the event"),
+    current_user: User = Depends(get_current_user)
+):
+    # Ensure the user is an admin
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to perform this action")
+
+    # Retrieve the existing event
+    existing_event = events_collection.find_one({"_id": event_id})
+    if not existing_event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Update the approval status
+    events_collection.update_one({"_id": event_id}, {"$set": {"approved": approved}})
+
+    # Fetch the updated event to return
+    updated_event = events_collection.find_one({"_id": event_id})
+    if updated_event:
+        updated_event['id'] = updated_event['_id']
+        del updated_event['_id']
+        return updated_event
+    else:
+        raise HTTPException(status_code=404, detail="Event not found after update")
 
 @app.patch("/events/update/{event_id}", response_model=GetEvent, tags=["admin", "events"])
 async def update_event(
