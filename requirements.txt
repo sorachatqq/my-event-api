@@ -4,3 +4,4 @@ pydantic
 passlib
 python-multipart
 pymongo
+python-jose
