@@ -14,12 +14,21 @@ from bson import ObjectId
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+from fastapi.middleware.cors import CORSMiddleware
 
 SECRET_KEY = "a_very_secret_key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins, adjust this for production
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 MONGODB_URL = os.getenv("MONGODB_URL")
 UPLOAD_DIRECTORY = "./uploads"
