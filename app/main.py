@@ -1,4 +1,5 @@
 from random import randint
+import random
 from typing import Optional, Union, List, Any
 from wsgiref.validate import validator
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, Form, Query, Body, Security
@@ -358,6 +359,8 @@ async def create_event(
                 image.write(content)
         except IOError as e:
             raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
+        
+    random_choice = random.choice([True, False])
     
     # Prepare event data with created_by field
     event_data = {
@@ -375,8 +378,8 @@ async def create_event(
         "type": type,
         "picture": file_path if picture else None,
         "created_by": current_user.id,
-        "approved": False,
-        "is_open_for_registration": False,
+        "approved": random_choice,
+        "is_open_for_registration": random_choice,
         "is_active": True
     }
 
