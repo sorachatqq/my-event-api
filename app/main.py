@@ -144,8 +144,6 @@ class UserSignUp(BaseModel):
     gender: Optional[str] = None
     age: Optional[int] = None
     interest_thing: Optional[str] = None
-    role: Optional[str] = None
-
 
 class User(BaseModel):
     id: Any = Field(None, alias="_id")
